@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>다이스 듀얼</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="app">
+    <section id="auth-screen" class="screen">
+      <div class="panel lobby-panel">
+        <h1>다이스 듀얼</h1>
+        <p class="subtitle">3개의 라인에서 주사위 점수를 겨루는 2인 실시간 대결</p>
+
+        <div class="status-box" id="auth-status">Firebase 연결 중...</div>
+
+        <div class="section-box">
+          <h2>방 만들기</h2>
+          <button id="create-room-btn" class="primary-btn" disabled>방 만들기</button>
+          <p id="created-room-code" class="room-code-text"></p>
+        </div>
+
+        <div class="section-box">
+          <h2>방 참여</h2>
+          <div class="join-row">
+            <input id="room-code-input" type="text" inputmode="numeric" maxlength="4" placeholder="4자리 코드">
+            <button id="join-room-btn" class="secondary-btn" disabled>참여</button>
+          </div>
+        </div>
+
+        <div class="section-box danger-zone">
+          <h2>관리자</h2>
+          <input id="admin-password-input" type="password" placeholder="마스터 비밀번호">
+          <div class="admin-row">
+            <button id="reset-room-btn" class="danger-btn">현재 방 삭제</button>
+            <button id="reset-all-btn" class="danger-btn">전체 삭제</button>
+          </div>
+        </div>
+
+        <div class="rule-box">
+          <h2>기본 규칙</h2>
+          <ul>
+            <li>각 플레이어는 3개 라인을 갖고, 각 라인은 3칸입니다.</li>
+            <li>선공은 방 입장 완료 후 랜덤으로 결정됩니다.</li>
+            <li>일반 주사위는 내 라인에 배치하거나, 같은 숫자의 상대 주사위를 제거하는 데 사용할 수 있습니다.</li>
+            <li>제거에 성공하면 보너스 주사위를 굴려 내 라인 또는 상대 라인에 배치합니다.</li>
+            <li>방어 상태 주사위는 제거할 수 없습니다.</li>
+            <li>양쪽 모두 배치할 칸이 없으면 3개 라인 점수로 승패를 결정합니다.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="game-screen" class="screen hidden">
+      <header class="game-header">
+        <div>
+          <h1>다이스 듀얼</h1>
+          <p id="room-info">방 코드: -</p>
+        </div>
+        <div class="header-actions">
+          <button id="copy-code-btn" class="small-btn">코드 복사</button>
+          <button id="leave-btn" class="small-btn">나가기</button>
+        </div>
+      </header>
+
+      <section class="game-status-grid">
+        <div class="status-card">
+          <span>내 팀</span>
+          <strong id="my-team-label">-</strong>
+        </div>
+        <div class="status-card">
+          <span>현재 차례</span>
+          <strong id="turn-label">-</strong>
+        </div>
+        <div class="status-card">
+          <span>상태</span>
+          <strong id="phase-label">-</strong>
+        </div>
+      </section>
+
+      <section class="dice-panel">
+        <div>
+          <p class="dice-label">현재 주사위</p>
+          <div id="dice-display" class="dice-display">-</div>
+        </div>
+        <p id="action-guide" class="action-guide">상대가 입장할 때까지 기다리세요.</p>
+      </section>
+
+      <section id="action-panel" class="action-panel">
+        <div class="action-group">
+          <h2>내 라인에 배치</h2>
+          <div id="normal-place-buttons" class="button-grid"></div>
+        </div>
+
+        <div class="action-group">
+          <h2>상대 주사위 제거</h2>
+          <div id="strike-targets" class="target-grid"></div>
+        </div>
+
+        <div class="action-group hidden" id="bonus-action-group">
+          <h2>보너스 주사위 배치</h2>
+          <div id="bonus-place-buttons" class="button-grid"></div>
+        </div>
+      </section>
+
+      <section class="score-panel">
+        <h2>라인 점수</h2>
+        <div id="score-board" class="score-board"></div>
+      </section>
+
+      <section id="board" class="board">
+        <div class="board-side opponent-side">
+          <h2 id="opponent-title">상대</h2>
+          <div id="opponent-lines" class="lines"></div>
+        </div>
+
+        <div class="board-side my-side">
+          <h2 id="my-title">나</h2>
+          <div id="my-lines" class="lines"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
