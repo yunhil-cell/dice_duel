@@ -26,7 +26,7 @@ const firebaseConfig = {
 
 const GAME_TITLE = "다이스 듀얼";
 const GAME_ROOT = "dice_duel_rooms";
-const MASTER_PASSWORD = "CHANGE_ME_MASTER_PASSWORD";
+const MASTER_PASSWORD = "reset";
 
 const LINE_COUNT = 3;
 const LINE_SIZE = 3;
