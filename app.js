@@ -30,6 +30,7 @@ const MASTER_PASSWORD = "reset";
 
 const LINE_COUNT = 3;
 const LINE_SIZE = 3;
+
 const TEAMS = {
   RED: "red",
   BLUE: "blue"
@@ -37,8 +38,11 @@ const TEAMS = {
 
 const PHASE = {
   WAITING: "waiting",
-  PLAYING: "playing",
-  BONUS: "bonus",
+  ROLL: "roll",
+  ROLLING: "rolling",
+  ACTION: "action",
+  BONUS_ROLL: "bonus_roll",
+  BONUS_PLACE: "bonus_place",
   FINISHED: "finished"
 };
 
@@ -63,15 +67,17 @@ const turnLabel = document.getElementById("turn-label");
 const phaseLabel = document.getElementById("phase-label");
 const diceDisplay = document.getElementById("dice-display");
 const actionGuide = document.getElementById("action-guide");
+const rollBtn = document.getElementById("roll-btn");
+
+const normalPlaceGroup = document.getElementById("normal-place-group");
+const strikeGroup = document.getElementById("strike-group");
+const bonusActionGroup = document.getElementById("bonus-action-group");
 const normalPlaceButtons = document.getElementById("normal-place-buttons");
 const strikeTargets = document.getElementById("strike-targets");
-const bonusActionGroup = document.getElementById("bonus-action-group");
 const bonusPlaceButtons = document.getElementById("bonus-place-buttons");
-const scoreBoard = document.getElementById("score-board");
-const opponentTitle = document.getElementById("opponent-title");
-const myTitle = document.getElementById("my-title");
-const opponentLines = document.getElementById("opponent-lines");
-const myLines = document.getElementById("my-lines");
+
+const duelBoardRows = document.getElementById("duel-board-rows");
+
 const copyCodeBtn = document.getElementById("copy-code-btn");
 const leaveBtn = document.getElementById("leave-btn");
 
@@ -83,6 +89,9 @@ let latestRoom = null;
 let lastEventId = "";
 let finishedCleanupScheduled = false;
 let joinedRoomOnce = false;
+
+let diceRollingInterval = null;
+let handledRollingIds = new Set();
 
 signInAnonymously(auth).catch(error => {
   authStatus.textContent = `익명 로그인 실패: ${error.message}`;
@@ -112,6 +121,8 @@ copyCodeBtn.addEventListener("click", copyRoomCode);
 leaveBtn.addEventListener("click", () => {
   location.reload();
 });
+
+rollBtn.addEventListener("click", handleRollButtonClick);
 
 roomCodeInput.addEventListener("input", () => {
   roomCodeInput.value = roomCodeInput.value.replace(/\D/g, "").slice(0, 4);
@@ -144,6 +155,7 @@ async function createRoom() {
       firstPlayer: null,
       turn: null,
       dice: null,
+      rolling: null,
       lines: createInitialLines(),
       firstProtectedPlaced: false,
       winner: null,
@@ -187,11 +199,6 @@ async function joinRoom() {
 
   const room = normalizeRoom(snapshot.val());
 
-  if (room.players?.blue?.uid && room.players.blue.uid !== currentUser.uid) {
-    alert("이미 두 명이 입장한 방입니다.");
-    return;
-  }
-
   if (room.players?.red?.uid === currentUser.uid) {
     currentRoomCode = roomCode;
     currentTeam = TEAMS.RED;
@@ -199,10 +206,22 @@ async function joinRoom() {
     return;
   }
 
+  if (room.players?.blue?.uid === currentUser.uid) {
+    currentRoomCode = roomCode;
+    currentTeam = TEAMS.BLUE;
+    enterRoom(roomCode, TEAMS.BLUE);
+    return;
+  }
+
+  if (room.players?.blue?.uid) {
+    alert("이미 두 명이 입장한 방입니다.");
+    return;
+  }
+
   const firstPlayer = Math.random() < 0.5 ? TEAMS.RED : TEAMS.BLUE;
   const nextRoom = {
     ...room,
-    phase: PHASE.PLAYING,
+    phase: PHASE.ROLL,
     players: {
       ...room.players,
       blue: {
@@ -213,7 +232,14 @@ async function joinRoom() {
     },
     firstPlayer,
     turn: firstPlayer,
-    dice: createDice("normal")
+    dice: null,
+    rolling: null,
+    lastEvent: {
+      id: createId(),
+      type: "gameStart",
+      actor: firstPlayer,
+      createdAt: Date.now()
+    }
   };
 
   await set(roomRef, nextRoom);
@@ -228,6 +254,8 @@ function enterRoom(roomCode, team) {
   currentTeam = team;
   joinedRoomOnce = true;
   finishedCleanupScheduled = false;
+
+  history.replaceState(null, "", `${location.pathname}?room=${roomCode}`);
 
   authScreen.classList.add("hidden");
   gameScreen.classList.remove("hidden");
@@ -249,12 +277,12 @@ function enterRoom(roomCode, team) {
     latestRoom = normalizeRoom(snapshot.val());
     renderRoom(latestRoom);
     handleLastEvent(latestRoom);
+    maybeFinalizeRolling(latestRoom);
     handleWinnerCleanup(latestRoom);
   });
 }
 
 function renderRoom(room) {
-  const opponentTeam = getOpponentTeam(currentTeam);
   const isMyTurn = room.turn === currentTeam;
   const myTeamText = getTeamText(currentTeam);
   const turnText = room.turn ? getTeamText(room.turn) : "-";
@@ -263,66 +291,90 @@ function renderRoom(room) {
   myTeamLabel.textContent = myTeamText;
   myTeamLabel.className = currentTeam === TEAMS.RED ? "team-red" : "team-blue";
   turnLabel.textContent = turnText;
-  turnLabel.className = room.turn === TEAMS.RED ? "team-red" : "team-blue";
+  turnLabel.className = room.turn === TEAMS.RED ? "team-red" : room.turn === TEAMS.BLUE ? "team-blue" : "";
   phaseLabel.textContent = getPhaseText(room.phase);
-  diceDisplay.textContent = room.dice?.value || "-";
 
-  myTitle.textContent = `나 (${myTeamText})`;
-  opponentTitle.textContent = `상대 (${getTeamText(opponentTeam)})`;
-
-  renderLines(myLines, room.lines[currentTeam]);
-  renderLines(opponentLines, room.lines[opponentTeam]);
-  renderScores(room);
-  renderActions(room, isMyTurn);
+  renderDiceDisplay(room);
+  renderActionArea(room, isMyTurn);
+  renderBoard(room);
 }
 
-function renderActions(room, isMyTurn) {
+function renderDiceDisplay(room) {
+  if (room.phase === PHASE.ROLLING && room.rolling) {
+    startDiceRollingVisual();
+    return;
+  }
+
+  stopDiceRollingVisual(room.dice?.value ? String(room.dice.value) : "-");
+}
+
+function renderActionArea(room, isMyTurn) {
   normalPlaceButtons.innerHTML = "";
   strikeTargets.innerHTML = "";
   bonusPlaceButtons.innerHTML = "";
+
+  normalPlaceGroup.classList.add("hidden");
+  strikeGroup.classList.add("hidden");
   bonusActionGroup.classList.add("hidden");
+  rollBtn.classList.add("hidden");
+  rollBtn.disabled = false;
+  rollBtn.textContent = "주사위 굴리기";
 
   if (room.phase === PHASE.WAITING) {
     actionGuide.textContent = "상대가 입장할 때까지 기다리세요.";
-    renderEmpty(strikeTargets, "아직 제거할 수 없습니다.");
     return;
   }
 
   if (room.phase === PHASE.FINISHED) {
     actionGuide.textContent = getFinishedText(room);
-    renderEmpty(strikeTargets, "게임이 종료되었습니다.");
     return;
   }
 
   if (!isMyTurn) {
-    actionGuide.textContent = "상대 차례입니다.";
-    renderEmpty(strikeTargets, "상대 차례에는 조작할 수 없습니다.");
-    return;
-  }
-
-  if (room.phase === PHASE.BONUS) {
-    actionGuide.textContent = "보너스 주사위를 내 라인 또는 상대 라인에 배치하세요. 보너스 주사위는 방어 상태가 됩니다.";
-    bonusActionGroup.classList.remove("hidden");
-    renderEmpty(normalPlaceButtons, "보너스 배치 중입니다.");
-    renderEmpty(strikeTargets, "보너스 주사위는 제거에 사용할 수 없습니다.");
-    renderBonusPlacementButtons(room);
-    return;
-  }
-
-  if (room.phase === PHASE.PLAYING) {
-    const diceValue = room.dice?.value;
-
-    if (!hasAnyEmptySlot(room.lines, currentTeam)) {
-      actionGuide.textContent = "내 필드가 가득 찼습니다. 상대에게 차례를 넘깁니다.";
-      renderEmpty(normalPlaceButtons, "배치 가능한 칸이 없습니다.");
-      renderEmpty(strikeTargets, "배치 가능한 칸이 없습니다.");
-      skipTurnIfNeeded(room);
-      return;
+    if (room.phase === PHASE.ROLLING && room.rolling) {
+      const rollingTeamText = getTeamText(room.rolling.by);
+      actionGuide.textContent = `${rollingTeamText}가 주사위를 굴리는 중입니다.`;
+    } else {
+      actionGuide.textContent = "상대 차례입니다.";
     }
+    return;
+  }
 
-    actionGuide.textContent = `주사위 ${diceValue}. 내 라인에 배치하거나, 상대의 ${diceValue}을 제거하세요.`;
+  if (room.phase === PHASE.ROLL) {
+    actionGuide.textContent = "주사위 굴리기 버튼을 눌러 일반 주사위를 굴리세요.";
+    rollBtn.classList.remove("hidden");
+    rollBtn.textContent = "주사위 굴리기";
+    return;
+  }
+
+  if (room.phase === PHASE.BONUS_ROLL) {
+    actionGuide.textContent = "제거에 성공했습니다. 보너스 주사위를 굴리세요.";
+    rollBtn.classList.remove("hidden");
+    rollBtn.textContent = "보너스 주사위 굴리기";
+    return;
+  }
+
+  if (room.phase === PHASE.ROLLING) {
+    actionGuide.textContent = "주사위를 굴리는 중입니다...";
+    rollBtn.classList.remove("hidden");
+    rollBtn.disabled = true;
+    rollBtn.textContent = "굴리는 중...";
+    return;
+  }
+
+  if (room.phase === PHASE.ACTION) {
+    actionGuide.textContent = `주사위 ${room.dice?.value}. 내 라인에 배치하거나, 상대의 ${room.dice?.value}를 제거하세요.`;
+    normalPlaceGroup.classList.remove("hidden");
+    strikeGroup.classList.remove("hidden");
     renderNormalPlacementButtons(room);
     renderStrikeTargets(room);
+    return;
+  }
+
+  if (room.phase === PHASE.BONUS_PLACE) {
+    actionGuide.textContent = `보너스 주사위 ${room.dice?.value}. 내 라인 또는 상대 라인 중 원하는 곳에 배치하세요. 배치된 보너스 주사위는 방어 상태입니다.`;
+    bonusActionGroup.classList.remove("hidden");
+    renderBonusPlacementButtons(room);
   }
 }
 
@@ -331,7 +383,7 @@ function renderNormalPlacementButtons(room) {
     const line = room.lines[currentTeam][lineIndex];
     const button = document.createElement("button");
     button.className = "line-btn";
-    button.textContent = `${lineIndex + 1}라인 배치 (${line.length}/${LINE_SIZE})`;
+    button.textContent = `${lineIndex + 1}라인 (${line.length}/${LINE_SIZE})`;
     button.disabled = line.length >= LINE_SIZE;
     button.addEventListener("click", () => placeNormalDice(lineIndex));
     normalPlaceButtons.appendChild(button);
@@ -352,8 +404,8 @@ function renderStrikeTargets(room) {
       if (dice.value === diceValue && !dice.protected) {
         targets.push({
           lineIndex,
-          diceIndex,
-          dice
+          diceId: dice.id,
+          value: dice.value
         });
       }
     }
@@ -367,8 +419,8 @@ function renderStrikeTargets(room) {
   targets.forEach(target => {
     const button = document.createElement("button");
     button.className = "target-btn";
-    button.textContent = `상대 ${target.lineIndex + 1}라인 ${target.dice.value} 제거`;
-    button.addEventListener("click", () => strikeDice(target.lineIndex, target.dice.id));
+    button.textContent = `${target.lineIndex + 1}라인 ${target.value} 제거`;
+    button.addEventListener("click", () => strikeDice(target.lineIndex, target.diceId));
     strikeTargets.appendChild(button);
   });
 }
@@ -378,29 +430,226 @@ function renderBonusPlacementButtons(room) {
 
   for (let lineIndex = 0; lineIndex < LINE_COUNT; lineIndex++) {
     const myLine = room.lines[currentTeam][lineIndex];
-    const myButton = document.createElement("button");
-    myButton.className = "line-btn";
-    myButton.textContent = `내 ${lineIndex + 1}라인 (${myLine.length}/${LINE_SIZE})`;
-    myButton.disabled = myLine.length >= LINE_SIZE;
-    myButton.addEventListener("click", () => placeBonusDice(currentTeam, lineIndex));
-    bonusPlaceButtons.appendChild(myButton);
+    const button = document.createElement("button");
+    button.className = "line-btn";
+    button.textContent = `내 ${lineIndex + 1}라인 (${myLine.length}/${LINE_SIZE})`;
+    button.disabled = myLine.length >= LINE_SIZE;
+    button.addEventListener("click", () => placeBonusDice(currentTeam, lineIndex));
+    bonusPlaceButtons.appendChild(button);
   }
 
   for (let lineIndex = 0; lineIndex < LINE_COUNT; lineIndex++) {
     const enemyLine = room.lines[opponentTeam][lineIndex];
-    const enemyButton = document.createElement("button");
-    enemyButton.className = "line-btn enemy";
-    enemyButton.textContent = `상대 ${lineIndex + 1}라인 (${enemyLine.length}/${LINE_SIZE})`;
-    enemyButton.disabled = enemyLine.length >= LINE_SIZE;
-    enemyButton.addEventListener("click", () => placeBonusDice(opponentTeam, lineIndex));
-    bonusPlaceButtons.appendChild(enemyButton);
+    const button = document.createElement("button");
+    button.className = "line-btn enemy";
+    button.textContent = `상대 ${lineIndex + 1}라인 (${enemyLine.length}/${LINE_SIZE})`;
+    button.disabled = enemyLine.length >= LINE_SIZE;
+    button.addEventListener("click", () => placeBonusDice(opponentTeam, lineIndex));
+    bonusPlaceButtons.appendChild(button);
   }
+}
+
+function renderBoard(room) {
+  duelBoardRows.innerHTML = "";
+
+  for (let lineIndex = 0; lineIndex < LINE_COUNT; lineIndex++) {
+    const redLine = room.lines.red[lineIndex];
+    const blueLine = room.lines.blue[lineIndex];
+
+    const redBase = getLineBaseScore(redLine);
+    const blueBase = getLineBaseScore(blueLine);
+    const redBonus = getLineBonusScore(redLine);
+    const blueBonus = getLineBonusScore(blueLine);
+    const redScore = redBase + redBonus;
+    const blueScore = blueBase + blueBonus;
+
+    let winnerText = "동점";
+    let redLeading = false;
+    let blueLeading = false;
+
+    if (redScore > blueScore) {
+      winnerText = "레드 우세";
+      redLeading = true;
+    } else if (blueScore > redScore) {
+      winnerText = "블루 우세";
+      blueLeading = true;
+    }
+
+    const row = document.createElement("div");
+    row.className = "duel-row";
+
+    const redSide = createLineSide({
+      title: `${lineIndex + 1}라인`,
+      subText: `합계 ${redScore} / 보너스 +${redBonus}`,
+      team: TEAMS.RED,
+      line: redLine,
+      leading: redLeading
+    });
+
+    const center = document.createElement("div");
+    center.className = "center-score-panel";
+    center.innerHTML = `
+      <div class="center-score-title">${lineIndex + 1}라인</div>
+      <div class="center-score-main">${redScore} : ${blueScore}</div>
+      <div class="center-score-sub">레드 +${redBonus} / 블루 +${blueBonus}</div>
+      <div class="center-score-winner">${winnerText}</div>
+    `;
+
+    const blueSide = createLineSide({
+      title: `${lineIndex + 1}라인`,
+      subText: `합계 ${blueScore} / 보너스 +${blueBonus}`,
+      team: TEAMS.BLUE,
+      line: blueLine,
+      leading: blueLeading
+    });
+
+    row.appendChild(redSide);
+    row.appendChild(center);
+    row.appendChild(blueSide);
+
+    duelBoardRows.appendChild(row);
+  }
+}
+
+function createLineSide({ title, subText, team, line, leading }) {
+  const side = document.createElement("div");
+  side.className = `line-side ${team === TEAMS.RED ? "red-side" : "blue-side"}${leading ? " leading" : ""}`;
+
+  const header = document.createElement("div");
+  header.className = "line-side-header";
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "line-side-title";
+  titleEl.textContent = title;
+
+  const subEl = document.createElement("div");
+  subEl.className = "line-side-sub";
+  subEl.textContent = subText;
+
+  header.appendChild(titleEl);
+  header.appendChild(subEl);
+
+  const slots = document.createElement("div");
+  slots.className = "line-slots";
+
+  for (let slotIndex = 0; slotIndex < LINE_SIZE; slotIndex++) {
+    const slot = document.createElement("div");
+    slot.className = "slot";
+
+    const dice = line[slotIndex];
+    if (dice) {
+      const diceEl = document.createElement("div");
+      diceEl.className = dice.protected ? "dice protected" : "dice";
+      diceEl.textContent = dice.value;
+      slot.appendChild(diceEl);
+    }
+
+    slots.appendChild(slot);
+  }
+
+  side.appendChild(header);
+  side.appendChild(slots);
+
+  return side;
+}
+
+async function handleRollButtonClick() {
+  const room = await getFreshRoom();
+
+  if (room.turn !== currentTeam) {
+    return;
+  }
+
+  let rollType = null;
+
+  if (room.phase === PHASE.ROLL) {
+    rollType = "normal";
+  } else if (room.phase === PHASE.BONUS_ROLL) {
+    rollType = "bonus";
+  }
+
+  if (!rollType) {
+    return;
+  }
+
+  room.phase = PHASE.ROLLING;
+  room.dice = null;
+  room.rolling = {
+    id: createId(),
+    by: currentTeam,
+    rollType,
+    startedAt: Date.now(),
+    durationMs: 900
+  };
+  room.lastEvent = {
+    id: createId(),
+    type: "rollingStart",
+    actor: currentTeam,
+    rollType,
+    createdAt: Date.now()
+  };
+
+  await saveRoom(room);
+}
+
+function maybeFinalizeRolling(room) {
+  if (room.phase !== PHASE.ROLLING || !room.rolling) {
+    return;
+  }
+
+  if (room.rolling.by !== currentTeam) {
+    return;
+  }
+
+  if (handledRollingIds.has(room.rolling.id)) {
+    return;
+  }
+
+  handledRollingIds.add(room.rolling.id);
+
+  const rollingId = room.rolling.id;
+  const waitMs = Math.max(150, room.rolling.durationMs - (Date.now() - room.rolling.startedAt));
+
+  setTimeout(async () => {
+    try {
+      const freshRoom = await getFreshRoom();
+
+      if (freshRoom.phase !== PHASE.ROLLING) {
+        return;
+      }
+
+      if (!freshRoom.rolling || freshRoom.rolling.id !== rollingId) {
+        return;
+      }
+
+      if (freshRoom.turn !== currentTeam) {
+        return;
+      }
+
+      const rollType = freshRoom.rolling.rollType;
+      freshRoom.dice = createDice(rollType);
+      freshRoom.rolling = null;
+      freshRoom.phase = rollType === "normal" ? PHASE.ACTION : PHASE.BONUS_PLACE;
+      freshRoom.lastEvent = {
+        id: createId(),
+        type: "rollResult",
+        actor: currentTeam,
+        rollType,
+        value: freshRoom.dice.value,
+        createdAt: Date.now()
+      };
+
+      await saveRoom(freshRoom);
+    } catch (error) {
+      console.error(error);
+    }
+  }, waitMs);
 }
 
 async function placeNormalDice(lineIndex) {
   const room = await getFreshRoom();
 
-  if (!canAct(room, PHASE.PLAYING)) {
+  if (!canAct(room, PHASE.ACTION)) {
     return;
   }
 
@@ -414,6 +663,7 @@ async function placeNormalDice(lineIndex) {
   }
 
   const shouldProtect = room.turn === room.firstPlayer && !room.firstProtectedPlaced;
+
   const placedDice = {
     ...room.dice,
     protected: shouldProtect,
@@ -432,7 +682,8 @@ async function placeNormalDice(lineIndex) {
     type: "place",
     actor: currentTeam,
     value: placedDice.value,
-    protected: placedDice.protected,
+    lineIndex,
+    protected: shouldProtect,
     createdAt: Date.now()
   };
 
@@ -443,7 +694,7 @@ async function placeNormalDice(lineIndex) {
 async function strikeDice(lineIndex, diceId) {
   const room = await getFreshRoom();
 
-  if (!canAct(room, PHASE.PLAYING)) {
+  if (!canAct(room, PHASE.ACTION)) {
     return;
   }
 
@@ -458,14 +709,15 @@ async function strikeDice(lineIndex, diceId) {
   });
 
   if (targetIndex === -1) {
-    alert("제거할 수 없는 주사위입니다.");
+    alert("이미 제거되었거나 제거할 수 없는 주사위입니다.");
     return;
   }
 
   const removedDice = line.splice(targetIndex, 1)[0];
 
-  room.phase = PHASE.BONUS;
-  room.dice = createDice("bonus");
+  room.phase = PHASE.BONUS_ROLL;
+  room.dice = null;
+  room.rolling = null;
   room.lastEvent = {
     id: createId(),
     type: "strike",
@@ -482,15 +734,11 @@ async function strikeDice(lineIndex, diceId) {
 async function placeBonusDice(ownerTeam, lineIndex) {
   const room = await getFreshRoom();
 
-  if (!canAct(room, PHASE.BONUS)) {
+  if (!canAct(room, PHASE.BONUS_PLACE)) {
     return;
   }
 
   if (!room.dice || room.dice.type !== "bonus") {
-    return;
-  }
-
-  if (![TEAMS.RED, TEAMS.BLUE].includes(ownerTeam)) {
     return;
   }
 
@@ -513,6 +761,7 @@ async function placeBonusDice(ownerTeam, lineIndex) {
     type: "bonusPlace",
     actor: currentTeam,
     ownerTeam,
+    lineIndex,
     value: placedDice.value,
     createdAt: Date.now()
   };
@@ -529,11 +778,11 @@ function advanceTurn(room) {
     return;
   }
 
-  const opponentTeam = getOpponentTeam(room.turn);
   const currentTurnTeam = room.turn;
+  const nextTeam = getOpponentTeam(currentTurnTeam);
 
-  if (hasAnyEmptySlot(room.lines, opponentTeam)) {
-    room.turn = opponentTeam;
+  if (hasAnyEmptySlot(room.lines, nextTeam)) {
+    room.turn = nextTeam;
   } else if (hasAnyEmptySlot(room.lines, currentTurnTeam)) {
     room.turn = currentTurnTeam;
   } else {
@@ -541,27 +790,9 @@ function advanceTurn(room) {
     return;
   }
 
-  room.phase = PHASE.PLAYING;
-  room.dice = createDice("normal");
-}
-
-async function skipTurnIfNeeded(room) {
-  if (!latestRoom || latestRoom.turn !== currentTeam) {
-    return;
-  }
-
-  const freshRoom = await getFreshRoom();
-
-  if (!canAct(freshRoom, PHASE.PLAYING)) {
-    return;
-  }
-
-  if (hasAnyEmptySlot(freshRoom.lines, currentTeam)) {
-    return;
-  }
-
-  advanceTurn(freshRoom);
-  await saveRoom(freshRoom);
+  room.phase = PHASE.ROLL;
+  room.dice = null;
+  room.rolling = null;
 }
 
 function finishGame(room) {
@@ -570,6 +801,7 @@ function finishGame(room) {
   room.phase = PHASE.FINISHED;
   room.turn = null;
   room.dice = null;
+  room.rolling = null;
   room.winner = result;
   room.finishedAt = Date.now();
   room.lastEvent = {
@@ -604,6 +836,34 @@ function calculateWinner(lines) {
   }
 
   return "draw";
+}
+
+function getLineBaseScore(line) {
+  return line.reduce((sum, dice) => sum + Number(dice.value || 0), 0);
+}
+
+function getLineBonusScore(line) {
+  const counts = {};
+
+  line.forEach(dice => {
+    const value = Number(dice.value || 0);
+    counts[value] = (counts[value] || 0) + 1;
+  });
+
+  let bonus = 0;
+
+  Object.entries(counts).forEach(([value, count]) => {
+    const numericValue = Number(value);
+    if (count > 1) {
+      bonus += numericValue * (count - 1);
+    }
+  });
+
+  return bonus;
+}
+
+function getLineScore(line) {
+  return getLineBaseScore(line) + getLineBonusScore(line);
 }
 
 function getFinishedText(room) {
@@ -662,9 +922,32 @@ function handleLastEvent(room) {
     triggerHitFeedback();
   }
 
+  if (event.type === "rollResult") {
+    triggerSoftFeedback();
+  }
+
   if (event.type === "bonusPlace") {
     triggerSoftFeedback();
   }
+}
+
+function startDiceRollingVisual() {
+  if (!diceRollingInterval) {
+    diceDisplay.classList.add("rolling");
+    diceRollingInterval = setInterval(() => {
+      diceDisplay.textContent = String(rollDice());
+    }, 90);
+  }
+}
+
+function stopDiceRollingVisual(finalText) {
+  if (diceRollingInterval) {
+    clearInterval(diceRollingInterval);
+    diceRollingInterval = null;
+  }
+
+  diceDisplay.classList.remove("rolling");
+  diceDisplay.textContent = finalText;
 }
 
 function triggerHitFeedback() {
@@ -682,66 +965,6 @@ function triggerHitFeedback() {
 function triggerSoftFeedback() {
   if (navigator.vibrate) {
     navigator.vibrate(45);
-  }
-}
-
-function renderLines(container, lines) {
-  container.innerHTML = "";
-
-  for (let lineIndex = 0; lineIndex < LINE_COUNT; lineIndex++) {
-    const lineElement = document.createElement("div");
-    lineElement.className = "line";
-
-    const label = document.createElement("div");
-    label.className = "line-label";
-    label.textContent = `${lineIndex + 1}라인`;
-    lineElement.appendChild(label);
-
-    const line = lines[lineIndex] || [];
-
-    for (let slotIndex = 0; slotIndex < LINE_SIZE; slotIndex++) {
-      const slot = document.createElement("div");
-      slot.className = "slot";
-
-      const dice = line[slotIndex];
-
-      if (dice) {
-        const diceElement = document.createElement("div");
-        diceElement.className = dice.protected ? "dice protected" : "dice";
-        diceElement.textContent = dice.value;
-        slot.appendChild(diceElement);
-      }
-
-      lineElement.appendChild(slot);
-    }
-
-    container.appendChild(lineElement);
-  }
-}
-
-function renderScores(room) {
-  scoreBoard.innerHTML = "";
-
-  for (let lineIndex = 0; lineIndex < LINE_COUNT; lineIndex++) {
-    const redScore = getLineScore(room.lines.red[lineIndex]);
-    const blueScore = getLineScore(room.lines.blue[lineIndex]);
-
-    let resultText = "동점";
-    if (redScore > blueScore) {
-      resultText = "레드 우세";
-    } else if (blueScore > redScore) {
-      resultText = "블루 우세";
-    }
-
-    const row = document.createElement("div");
-    row.className = "score-row";
-    row.innerHTML = `
-      <strong>${lineIndex + 1}라인</strong>
-      <span>레드: ${redScore}</span>
-      <span>블루: ${blueScore}</span>
-      <span>${resultText}</span>
-    `;
-    scoreBoard.appendChild(row);
   }
 }
 
@@ -823,10 +1046,6 @@ function normalizeTeamLines(lines) {
   return normalized;
 }
 
-function getLineScore(line) {
-  return line.reduce((sum, dice) => sum + Number(dice.value || 0), 0);
-}
-
 function hasAnyEmptySlot(lines, team) {
   return lines[team].some(line => line.length < LINE_SIZE);
 }
@@ -856,11 +1075,23 @@ function getPhaseText(phase) {
     return "대기 중";
   }
 
-  if (phase === PHASE.PLAYING) {
-    return "일반 턴";
+  if (phase === PHASE.ROLL) {
+    return "주사위 굴리기";
   }
 
-  if (phase === PHASE.BONUS) {
+  if (phase === PHASE.ROLLING) {
+    return "굴리는 중";
+  }
+
+  if (phase === PHASE.ACTION) {
+    return "행동 선택";
+  }
+
+  if (phase === PHASE.BONUS_ROLL) {
+    return "보너스 굴리기";
+  }
+
+  if (phase === PHASE.BONUS_PLACE) {
     return "보너스 배치";
   }
 
@@ -955,9 +1186,11 @@ async function copyRoomCode() {
     return;
   }
 
+  const inviteText = `${location.origin}${location.pathname}?room=${currentRoomCode}`;
+
   try {
-    await navigator.clipboard.writeText(currentRoomCode);
-    alert("방 코드가 복사되었습니다.");
+    await navigator.clipboard.writeText(inviteText);
+    alert("참여 링크가 복사되었습니다.");
   } catch {
     alert(`방 코드: ${currentRoomCode}`);
   }
