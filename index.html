@@ -45,8 +45,10 @@
             <li>선공은 참가자 입장 시 랜덤으로 결정됩니다.</li>
             <li>내 차례가 오면 직접 주사위 굴리기 버튼을 눌러 진행합니다.</li>
             <li>일반 주사위는 내 라인에 배치하거나 같은 숫자의 상대 주사위를 제거하는 데 사용할 수 있습니다.</li>
-            <li>제거 성공 시 보너스 주사위를 한 번 더 굴리고, 그 주사위는 내 라인 또는 상대 라인에 배치할 수 있습니다.</li>
+            <li>상대 주사위를 제거하려면, 같은 번호의 내 라인에 빈칸이 있어야 합니다.</li>
+            <li>제거 성공 시 보너스 주사위를 한 번 더 굴리고, 내 라인 또는 상대 라인에 배치할 수 있습니다.</li>
             <li>보너스 주사위는 제거에 사용할 수 없고, 배치되면 방어 상태가 됩니다.</li>
+            <li>보너스 주사위는 어느 구역에 놓든 실제로 놓은 플레이어 색으로 표시됩니다.</li>
             <li>같은 줄에 같은 숫자가 여러 개 있으면 보너스 점수를 받습니다.</li>
             <li>양쪽 모두 더 이상 자기 필드에 배치할 수 없으면 게임이 종료됩니다.</li>
           </ul>
@@ -94,21 +96,8 @@
         </div>
       </section>
 
-      <section class="action-panel">
-        <div id="normal-place-group" class="action-group hidden">
-          <h2>내 라인에 배치</h2>
-          <div id="normal-place-buttons" class="button-grid"></div>
-        </div>
-
-        <div id="strike-group" class="action-group hidden">
-          <h2>상대 주사위 제거</h2>
-          <div id="strike-targets" class="target-grid"></div>
-        </div>
-
-        <div id="bonus-action-group" class="action-group hidden bonus-group">
-          <h2>보너스 주사위 배치</h2>
-          <div id="bonus-place-buttons" class="button-grid bonus-grid"></div>
-        </div>
+      <section class="touch-help-panel">
+        <p id="touch-help-text">주사위를 굴린 뒤 보드의 라인이나 주사위를 직접 누르세요.</p>
       </section>
 
       <section class="duel-board-wrapper">
